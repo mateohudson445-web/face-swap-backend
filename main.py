@@ -63,27 +63,34 @@ async def process_frame(file: UploadFile = File(...)):
         # --- ONNX FACE SWAP LOGIC ENGINE ---
         # 1. We scale down dimensions internally to optimize CPU frame calculations 
         h, w = frame.shape[:2]
-        small_frame = cv2.resize(frame, (256, 256))
+        small_frame = cv2.resize(frame, (128, 128))
         
         # 2. If the ONNX session loaded correctly, mathematically map expressions
         if session_swap is not None:
             # Prepare image blob matrices (Normalize, Transpose to match Model Channels)
-            blob = small_frame.astype(np.float32) / 255.0
+            blob = small_frame.astype(np.float32)
+            # Convert BGR to RGB format required by inswapper
+            blob = cv2.cvtColor(blob, cv2.COLOR_BGR2RGB)
+            # Normalize pixel values
+            blob = (blob - 127.5) / 127.5
             blob = np.transpose(blob, (2, 0, 1))
             blob = np.expand_dims(blob, axis=0)
             
             # Execute mathematical identity mapping structure onto current frame tracking matrix
             # This directly swaps structural identities while locking shadows, lighting, and expressions
+            # The dictionary map indexes the first input [0] and second input [1] perfectly.
+            input_names = [inp.name for inp in session_swap.get_inputs()]
             ort_inputs = {
-                session_swap.get_inputs()[0].name: blob,
-                session_swap.get_inputs()[1].name: target_face_embedding
+                input_names[0]: blob,
+                input_names[1]: target_face_embedding
             }
             ort_outs = session_swap.run(None, ort_inputs)
             
             # Reconstruct the output frame block back into an openCV image format
             out_frame = np.squeeze(ort_outs[0])
             out_frame = np.transpose(out_frame, (1, 2, 0))
-            out_frame = (out_frame * 255.0).clip(0, 255).astype(np.uint8)
+            out_frame = (out_frame * 127.5 + 127.5).clip(0, 255).astype(np.uint8)
+            out_frame = cv2.cvtColor(out_frame, cv2.COLOR_RGB2BGR)
             frame = cv2.resize(out_frame, (w, h))
             
     except Exception as ai_error:
