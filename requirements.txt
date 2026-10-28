@@ -3,4 +3,3 @@ uvicorn
 python-multipart
 opencv-python-headless
 numpy==1.24.3
-scipy
