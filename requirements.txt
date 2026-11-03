@@ -1,5 +1,4 @@
 fastapi
-uvicorn
-python-multipart
+uvicorn[standard]
 opencv-python-headless
-numpy==1.24.3
+numpy
