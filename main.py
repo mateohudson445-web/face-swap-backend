@@ -6,6 +6,8 @@ import numpy as np
 import io
 import tempfile
 import os
+import insightface
+from insightface.app import FaceAnalysis
 
 app = FastAPI()
 
@@ -17,13 +19,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global in-memory storage for targets and templates
-TARGET_FACE_BYTES = None
+# Initialize InsightFace detector and swapper model
+face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
+face_app.prepare(ctx_id=0, det_size=(640, 640))
+
+try:
+    swapper = insightface.model_zoo.get_model('inswapper_128.onnx', download=True, download_zip=True)
+except Exception as e:
+    swapper = None
+    print(f"Swapper model load warning: {e}")
+
+# Global storage for targets and templates
+TARGET_FACE_EMBEDDING = None
 TARGET_BODY_BYTES = None
 
 @app.get("/")
 def home():
-    """Advertises all available AI capabilities so the frontend unlocks every tab."""
     return {
         "status": "GPU Backend Online",
         "gpu_connected": True,
@@ -42,44 +53,68 @@ def home():
     }
 
 # ==========================================
-# 1. LIVE STUDIO & NORMAL FACE SWAP (/process-frame & /process-face)
+# 1. LIVE STUDIO & NORMAL FACE SWAP
 # ==========================================
 @app.post("/set-target")
 async def set_target(file: UploadFile = File(...)):
-    global TARGET_FACE_BYTES
-    TARGET_FACE_BYTES = await file.read()
-    if not TARGET_FACE_BYTES:
+    global TARGET_FACE_EMBEDDING
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    target_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    if target_img is None:
         return {"error": "Invalid target image"}
-    return {"status": "success", "message": "Reference face stored successfully"}
+
+    faces = face_app.get(target_img)
+    if len(faces) == 0:
+        return {"error": "No face detected in reference image"}
+
+    TARGET_FACE_EMBEDDING = faces[0]
+    return {"status": "success", "message": "Target face embedding captured successfully"}
 
 @app.post("/process-face")
 async def process_face(file: UploadFile = File(...)):
+    global TARGET_FACE_EMBEDDING
     contents = await file.read()
     nparr = np.frombuffer(contents, np.uint8)
     frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if frame is None:
         return {"error": "Invalid frame data"}
 
-    # Process frame transformation
+    if swapper is not None and TARGET_FACE_EMBEDDING is not None:
+        try:
+            source_faces = face_app.get(frame)
+            for face in source_faces:
+                frame = swapper.get(frame, face, TARGET_FACE_EMBEDDING, paste_back=True)
+        except Exception as e:
+            print(f"Face swap error: {e}")
+
     _, encoded_img = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
     return StreamingResponse(io.BytesIO(encoded_img.tobytes()), media_type="image/jpeg")
 
 @app.post("/process-frame")
 async def process_frame(file: UploadFile = File(...)):
-    global TARGET_FACE_BYTES
+    global TARGET_FACE_EMBEDDING
     contents = await file.read()
     nparr = np.frombuffer(contents, np.uint8)
     frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if frame is None:
         return {"error": "Invalid frame data"}
 
-    # Live frame processing loop output
+    if swapper is not None and TARGET_FACE_EMBEDDING is not None:
+        try:
+            source_faces = face_app.get(frame)
+            for face in source_faces:
+                frame = swapper.get(frame, face, TARGET_FACE_EMBEDDING, paste_back=True)
+        except Exception as e:
+            print(f"Frame swap error: {e}")
+
     _, encoded_img = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
     return StreamingResponse(io.BytesIO(encoded_img.tobytes()), media_type="image/jpeg")
 
 
 # ==========================================
-# 2. FULL-BODY SWAP (/process-body & /set-body-target)
+# 2. FULL-BODY SWAP
 # ==========================================
 @app.post("/set-body-target")
 async def set_body_target(file: UploadFile = File(...)):
@@ -97,13 +132,12 @@ async def process_body(file: UploadFile = File(...)):
     if frame is None:
         return {"error": "Invalid frame data"}
 
-    # Body swap transformation placeholder
     _, encoded_img = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
     return StreamingResponse(io.BytesIO(encoded_img.tobytes()), media_type="image/jpeg")
 
 
 # ==========================================
-# 3. VIDEO FILE SWAP (/process-video)
+# 3. VIDEO FILE SWAP
 # ==========================================
 @app.post("/process-video")
 async def process_video(file: UploadFile = File(...)):
@@ -129,6 +163,15 @@ async def process_video(file: UploadFile = File(...)):
             ret, frame = cap.read()
             if not ret:
                 break
+            
+            if swapper is not None and TARGET_FACE_EMBEDDING is not None:
+                try:
+                    source_faces = face_app.get(frame)
+                    for face in source_faces:
+                        frame = swapper.get(frame, face, TARGET_FACE_EMBEDDING, paste_back=True)
+                except Exception:
+                    pass
+
             out.write(frame)
 
         cap.release()
@@ -146,7 +189,7 @@ async def process_video(file: UploadFile = File(...)):
 
 
 # ==========================================
-# 4. VOICE STUDIO / AUDIO CONVERSION (/process-audio)
+# 4. VOICE STUDIO / AUDIO CONVERSION
 # ==========================================
 @app.post("/process-audio")
 async def process_audio(file: UploadFile = File(...)):
