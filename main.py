@@ -19,19 +19,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize InsightFace detector and swapper model
-face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
-face_app.prepare(ctx_id=0, det_size=(640, 640))
-
-try:
-    swapper = insightface.model_zoo.get_model('inswapper_128.onnx', download=True, download_zip=True)
-except Exception as e:
-    swapper = None
-    print(f"Swapper model load warning: {e}")
-
-# Global storage for targets and templates
+# Lazy initialization variables to prevent startup crashes
+face_app = None
+swapper = None
 TARGET_FACE_EMBEDDING = None
 TARGET_BODY_BYTES = None
+
+def get_face_app():
+    global face_app
+    if face_app is None:
+        try:
+            face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
+            face_app.prepare(ctx_id=0, det_size=(640, 640))
+        except Exception as e:
+            print(f"FaceAnalysis init error: {e}")
+    return face_app
+
+def get_swapper():
+    global swapper
+    if swapper is None:
+        try:
+            swapper = insightface.model_zoo.get_model('inswapper_128.onnx', download=True, download_zip=True)
+        except Exception as e:
+            print(f"Swapper model load error: {e}")
+    return swapper
 
 @app.get("/")
 def home():
@@ -65,7 +76,11 @@ async def set_target(file: UploadFile = File(...)):
     if target_img is None:
         return {"error": "Invalid target image"}
 
-    faces = face_app.get(target_img)
+    app_detector = get_face_app()
+    if app_detector is None:
+        return {"error": "Face analysis model failed to initialize"}
+
+    faces = app_detector.get(target_img)
     if len(faces) == 0:
         return {"error": "No face detected in reference image"}
 
@@ -81,11 +96,14 @@ async def process_face(file: UploadFile = File(...)):
     if frame is None:
         return {"error": "Invalid frame data"}
 
-    if swapper is not None and TARGET_FACE_EMBEDDING is not None:
+    current_swapper = get_swapper()
+    app_detector = get_face_app()
+
+    if current_swapper is not None and TARGET_FACE_EMBEDDING is not None and app_detector is not None:
         try:
-            source_faces = face_app.get(frame)
+            source_faces = app_detector.get(frame)
             for face in source_faces:
-                frame = swapper.get(frame, face, TARGET_FACE_EMBEDDING, paste_back=True)
+                frame = current_swapper.get(frame, face, TARGET_FACE_EMBEDDING, paste_back=True)
         except Exception as e:
             print(f"Face swap error: {e}")
 
@@ -101,11 +119,14 @@ async def process_frame(file: UploadFile = File(...)):
     if frame is None:
         return {"error": "Invalid frame data"}
 
-    if swapper is not None and TARGET_FACE_EMBEDDING is not None:
+    current_swapper = get_swapper()
+    app_detector = get_face_app()
+
+    if current_swapper is not None and TARGET_FACE_EMBEDDING is not None and app_detector is not None:
         try:
-            source_faces = face_app.get(frame)
+            source_faces = app_detector.get(frame)
             for face in source_faces:
-                frame = swapper.get(frame, face, TARGET_FACE_EMBEDDING, paste_back=True)
+                frame = current_swapper.get(frame, face, TARGET_FACE_EMBEDDING, paste_back=True)
         except Exception as e:
             print(f"Frame swap error: {e}")
 
@@ -159,16 +180,19 @@ async def process_video(file: UploadFile = File(...)):
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_temp.name, fourcc, fps, (width, height))
 
+        current_swapper = get_swapper()
+        app_detector = get_face_app()
+
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
             
-            if swapper is not None and TARGET_FACE_EMBEDDING is not None:
+            if current_swapper is not None and TARGET_FACE_EMBEDDING is not None and app_detector is not None:
                 try:
-                    source_faces = face_app.get(frame)
+                    source_faces = app_detector.get(frame)
                     for face in source_faces:
-                        frame = swapper.get(frame, face, TARGET_FACE_EMBEDDING, paste_back=True)
+                        frame = current_swapper.get(frame, face, TARGET_FACE_EMBEDDING, paste_back=True)
                 except Exception:
                     pass
 
