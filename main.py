@@ -147,11 +147,24 @@ async def set_body_target(file: UploadFile = File(...)):
 
 @app.post("/process-body")
 async def process_body(file: UploadFile = File(...)):
+    global TARGET_FACE_EMBEDDING
     contents = await file.read()
     nparr = np.frombuffer(contents, np.uint8)
     frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if frame is None:
         return {"error": "Invalid frame data"}
+
+    current_swapper = get_swapper()
+    app_detector = get_face_app()
+
+    # Apply real face swap to body frames as well if target is loaded
+    if current_swapper is not None and TARGET_FACE_EMBEDDING is not None and app_detector is not None:
+        try:
+            source_faces = app_detector.get(frame)
+            for face in source_faces:
+                frame = current_swapper.get(frame, face, TARGET_FACE_EMBEDDING, paste_back=True)
+        except Exception as e:
+            print(f"Body face swap error: {e}")
 
     _, encoded_img = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
     return StreamingResponse(io.BytesIO(encoded_img.tobytes()), media_type="image/jpeg")
